@@ -1,0 +1,145 @@
+# bibliotecas
+import requests
+from lxml import html
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
+
+# página de login e dados
+login_url = "https://portal.lmmoto.com.br/glstorefront/glmotos/pt/BRL/login"
+USERNAME = "contato@siromotos.com.br"
+PASSWORD = "Whats_123"
+
+# XPaths do usuário e da senha
+xpath_user = "/html/body/main/div[3]/div/div[1]/div/div/div/form/div[1]/input"
+xpath_pass = "/html/body/main/div[3]/div/div[1]/div/div/div/form/div[2]/input"
+
+# XPath para encontrar o form (usamos o pai comum das inputs)
+xpath_form = "/html/body/main/div[3]/div/div[1]/div/div/div/form"
+
+# babeçalhos básicos
+headers = {
+    "User-Agent": "Mozilla/5.0 (compat) Python requests",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+session = requests.Session()
+
+# GET da página de login
+r = session.get(login_url, headers=headers, timeout=15)
+tree = html.fromstring(r.text)
+
+
+# localizar o form e inputs usando as XPaths
+form_els = tree.xpath(xpath_form)
+if not form_els:
+    raise SystemExit("Form não encontrado com a XPath fornecida. Verifique a XPath ou abra DevTools para confirmar.")
+
+form = form_els[0]
+
+# extrair a URL de action do form (resolver relative->absolute)
+action = form.get("action") or login_url
+action_url = urljoin(login_url, action)
+
+# localizar os inputs de usuário e senha e extrair o atributo 'name'
+user_inputs = tree.xpath(xpath_user)
+pass_inputs = tree.xpath(xpath_pass)
+
+if not user_inputs or not pass_inputs:
+    raise SystemExit("Inputs de usuário ou senha não encontrados com as XPaths fornecidas.")
+
+user_input = user_inputs[0]
+pass_input = pass_inputs[0]
+
+user_name = user_input.get("name")
+pass_name = pass_input.get("name")
+
+if not user_name or not pass_name:
+    # se não houver atributo name, não é possível usar requests para preenchê-los diretamente
+    raise SystemExit("Os inputs não têm atributo 'name'. Isso normalmente exige um navegador (Selenium/Playwright) ou inspecionar a requisição no DevTools para ver os parâmetros reais.")
+
+# coletar campos hidden (CSRF, outros)
+payload = {}
+hidden_inputs = form.xpath(".//input[@type='hidden']")
+for hid in hidden_inputs:
+    n = hid.get("name")
+    v = hid.get("value", "")
+    if n:
+        payload[n] = v
+
+# preencher usuário e senha no payload
+payload[user_name] = USERNAME
+payload[pass_name] = PASSWORD
+
+# headers adicionais e POST
+post_headers = headers.copy()
+post_headers.update({
+    "Referer": login_url,
+    "Content-Type": "application/x-www-form-urlencoded"
+})
+
+resp = session.post(action_url, data=payload, headers=post_headers, allow_redirects=True, timeout=15)
+
+# checar sucesso
+print("POST para:", action_url)
+print("Código:", resp.status_code)
+print("URL final após redirects:", resp.url)
+
+# heurísticas para checar login:
+if "logout" in resp.text.lower() or "sair" in resp.text.lower():
+    print("Login bem-sucedido.")
+elif resp.url != login_url:
+    print("Provavelmente autenticado — URL mudou após o POST.")
+else:
+    print("Login falho. Verifique resposta ou abra DevTools para ver a requisição real.")
+print("-" * 100)
+# lista para armazenar os produtos
+produtos = []
+
+# loop de coleta
+total_paginas = 10
+
+for pagina in range(total_paginas):
+    url_pagina = f"https://portal.lmmoto.com.br/glstorefront/glmotos/pt/BRL/Motos/Pe%C3%A7as/c/glmotos_pecas?q=%3Aname-asc&page={pagina}&sort=name-asc&layoutMode=DETAILED"
+    dados = session.get(url_pagina, headers=headers, timeout=15)
+
+    if dados.status_code != 200:
+        print(f"Erro ao acessar página {pagina}: Status {dados.status_code}")
+        continue
+
+    soup = BeautifulSoup(dados.content, 'html.parser')
+    nomes = soup.find_all('div', class_='product__list--name')
+    precos = soup.find_all('div', class_='precoPor')
+
+    if not nomes or not precos:
+        print(f"Nenhum produto encontrado na página {pagina}.")
+        continue
+
+    for i in range(min(len(nomes), len(precos))):
+        nome = " ".join(nomes[i].text.split())
+        preco = " ".join(precos[i].text.replace("Por", "").split())
+
+        produtos.append({
+            "nome": nome,
+            "preco": preco
+        })
+
+    print(f"Coletados {len(produtos)} produtos até agora...")
+
+    # loop de pesquisa no terminal
+while True:
+    termo = input("\nDigite um termo para buscar (ou 'sair' para encerrar): ").strip().lower()
+
+    if termo == "sair":
+        print("Encerrando busca.")
+        break
+
+    resultados = [p for p in produtos if termo in p["nome"].lower()]
+
+    if resultados:
+        print(f"\n{len(resultados)} resultados encontrados para '{termo}':\n")
+        for p in resultados:
+            print(f"Produto: {p['nome']}")
+            print(f"Preço: {p['preco']}")
+            print("-" * 60)
+    else:
+        print("Nenhum resultado encontrado.")
